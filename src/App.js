@@ -1,4 +1,4 @@
-// src/App.js
+// src/App.js - V2
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './services/AuthContext';
@@ -11,6 +11,10 @@ import Practice from './pages/Practice';
 import Strumming from './pages/Strumming';
 import Songs from './pages/Songs';
 import Progress from './pages/Progress';
+import Gamification from './pages/Gamification';
+import Analytics from './pages/Analytics';
+import PracticePlanner from './pages/PracticePlanner';
+import RecordingStudio from './pages/RecordingStudio';
 import './index.css';
 
 function ProtectedLayout() {
@@ -28,6 +32,10 @@ function ProtectedLayout() {
           <Route path="/strumming" element={<Strumming />} />
           <Route path="/songs" element={<Songs />} />
           <Route path="/progress" element={<Progress />} />
+          <Route path="/gamification" element={<Gamification />} />
+          <Route path="/analytics" element={<Analytics />} />
+          <Route path="/planner" element={<PracticePlanner />} />
+          <Route path="/recording" element={<RecordingStudio />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
