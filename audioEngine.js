@@ -1,28 +1,145 @@
-// src/pages/Practice.jsx - V2 with chord accuracy detection
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { CHORDS } from '../data/chords';
-import { useAuth } from '../services/AuthContext';
-import { logPracticeSession } from '../services/userService';
-import { playChordSound, playMetronomeClick } from '../services/audioEngine';
-import { XPToast } from '../components/XPToast';
-import ChordDiagram from '../components/ChordDiagram';
+// src/services/audioEngine.js
+// Real-time chord audio synthesis using Web Audio API
+// Simulates guitar tone with oscillators, envelope shaping, and harmonics
 
-// --- Pitch Detection (autocorrelation) ---
-function autocorrelate(buf, sampleRate) {
-  let SIZE = buf.length, rms = 0;
+let audioCtx = null;
+
+function getCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Resume if suspended (browser autoplay policy)
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+/**
+ * Creates a guitar-like tone for a single string frequency
+ * Uses sawtooth + triangle oscillator blend with pluck envelope
+ */
+function playString(ctx, frequency, startTime, duration = 1.8, gain = 0.18) {
+  const masterGain = ctx.createGain();
+  masterGain.connect(ctx.destination);
+
+  // Pluck envelope: fast attack, long natural decay
+  masterGain.gain.setValueAtTime(0, startTime);
+  masterGain.gain.linearRampToValueAtTime(gain, startTime + 0.005);
+  masterGain.gain.exponentialRampToValueAtTime(gain * 0.6, startTime + 0.05);
+  masterGain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+  // Primary tone - sawtooth (rich harmonics like guitar)
+  const osc1 = ctx.createOscillator();
+  osc1.type = 'sawtooth';
+  osc1.frequency.value = frequency;
+
+  // Body resonance - triangle wave (warm body)
+  const osc2 = ctx.createOscillator();
+  osc2.type = 'triangle';
+  osc2.frequency.value = frequency * 2; // Octave up
+
+  // Slight detuning for natural guitar sound
+  osc1.detune.value = Math.random() * 4 - 2;
+  osc2.detune.value = Math.random() * 4 - 2;
+
+  // Filter to shape guitar tone (reduce harsh highs)
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = frequency * 8;
+  filter.Q.value = 0.8;
+
+  // Mix: mostly fundamental, some octave
+  const osc1Gain = ctx.createGain();
+  osc1Gain.gain.value = 0.7;
+  const osc2Gain = ctx.createGain();
+  osc2Gain.gain.value = 0.3;
+
+  osc1.connect(osc1Gain);
+  osc2.connect(osc2Gain);
+  osc1Gain.connect(filter);
+  osc2Gain.connect(filter);
+  filter.connect(masterGain);
+
+  osc1.start(startTime);
+  osc2.start(startTime);
+  osc1.stop(startTime + duration + 0.1);
+  osc2.stop(startTime + duration + 0.1);
+}
+
+/**
+ * Plays a full chord by strumming strings sequentially (not all at once)
+ * This gives it that natural guitar strum feel
+ */
+export function playChord(chord, options = {}) {
+  if (!chord?.frequencies?.length) return;
+
+  const ctx = getCtx();
+  const now = ctx.currentTime;
+  const strumDelay = options.strumDelay ?? 0.025; // 25ms between strings
+  const duration = options.duration ?? 2.0;
+  const volume = options.volume ?? 0.18;
+
+  chord.frequencies.forEach((freq, i) => {
+    const t = now + i * strumDelay;
+    playString(ctx, freq, t, duration, volume);
+  });
+}
+
+/**
+ * Plays a single note (for tuner reference tones, metronome, etc.)
+ */
+export function playNote(frequency, duration = 0.5, volume = 0.2) {
+  const ctx = getCtx();
+  const now = ctx.currentTime;
+  playString(ctx, frequency, now, duration, volume);
+}
+
+/**
+ * Plays metronome click
+ */
+export function playClick(isAccent = false) {
+  const ctx = getCtx();
+  const now = ctx.currentTime;
+
+  const osc = ctx.createOscillator();
+  const gainNode = ctx.createGain();
+
+  osc.connect(gainNode);
+  gainNode.connect(ctx.destination);
+
+  osc.frequency.value = isAccent ? 1200 : 800;
+  gainNode.gain.setValueAtTime(0.3, now);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+  osc.start(now);
+  osc.stop(now + 0.06);
+}
+
+/**
+ * Frequency detection via autocorrelation for tuner
+ */
+export function autocorrelate(buf, sampleRate) {
+  const SIZE = buf.length;
+  let rms = 0;
   for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / SIZE);
-  if (rms < 0.015) return -1;
+  if (rms < 0.008) return -1;
+
   let r1 = 0, r2 = SIZE - 1;
-  for (let i = 0; i < SIZE / 2; i++) if (Math.abs(buf[i]) < 0.2) { r1 = i; break; }
-  for (let i = 1; i < SIZE / 2; i++) if (Math.abs(buf[SIZE - i]) < 0.2) { r2 = SIZE - i; break; }
-  buf = buf.slice(r1, r2); SIZE = buf.length;
-  const c = new Float32Array(SIZE).fill(0);
-  for (let i = 0; i < SIZE; i++) for (let j = 0; j < SIZE - i; j++) c[i] += buf[j] * buf[j + i];
+  const thres = 0.2;
+  for (let i = 0; i < SIZE / 2; i++) if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+  for (let i = 1; i < SIZE / 2; i++) if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+
+  const slice = buf.slice(r1, r2);
+  const len = slice.length;
+  const c = new Float32Array(len).fill(0);
+  for (let i = 0; i < len; i++)
+    for (let j = 0; j < len - i; j++)
+      c[i] += slice[j] * slice[j + i];
+
   let d = 0;
   while (c[d] > c[d + 1]) d++;
   let maxval = -1, maxpos = -1;
-  for (let i = d; i < SIZE; i++) if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+  for (let i = d; i < len; i++) {
+    if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+  }
   let T0 = maxpos;
   const x1 = c[T0 - 1], x2 = c[T0], x3 = c[T0 + 1];
   const a = (x1 + x3 - 2 * x2) / 2;
@@ -31,380 +148,136 @@ function autocorrelate(buf, sampleRate) {
   return sampleRate / T0;
 }
 
-function freqMatchesChord(detectedFreqs, targetChord) {
-  if (!detectedFreqs.length || !targetChord?.frequencies?.length) return 0;
-  const chordFreqs = targetChord.frequencies;
-  let matches = 0;
-  for (const cf of chordFreqs) {
-    for (const df of detectedFreqs) {
-      const ratio = df / cf;
-      // Allow harmonic matches (octave equivalents)
-      const normalized = ratio > 2 ? ratio / 2 : ratio < 0.5 ? ratio * 2 : ratio;
-      if (Math.abs(normalized - 1) < 0.06) { matches++; break; }
-    }
-  }
-  return Math.round((matches / chordFreqs.length) * 100);
-}
+/**
+ * Detect dominant chord from microphone frequencies using FFT
+ * Compares detected peaks against chord frequency profiles
+ */
+export function detectChordFromFrequencies(detectedFreqs, chords) {
+  if (!detectedFreqs?.length) return null;
 
-function Metronome({ bpm, setBpm, active, beat }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 16px', background: 'var(--bg-2)', borderRadius: 12 }}>
-      <div style={{
-        width: 14, height: 14, borderRadius: '50%',
-        background: active && beat ? 'var(--accent)' : 'var(--bg-3)',
-        boxShadow: active && beat ? '0 0 16px var(--accent-glow)' : 'none',
-        transition: 'all 0.05s', flexShrink: 0,
-      }} />
-      <div style={{ flex: 1 }}>
-        <input type="range" min={40} max={200} value={bpm}
-          onChange={e => setBpm(Number(e.target.value))}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: 'var(--font-display)' }}>
-          <span>40</span><span style={{ color: 'var(--accent)', fontWeight: 700 }}>{bpm} BPM</span><span>200</span>
-        </div>
-      </div>
-    </div>
-  );
-}
+  let bestMatch = null;
+  let bestScore = 0;
 
-export default function Practice() {
-  const { currentUser, refreshProfile } = useAuth();
-  const [phase, setPhase] = useState('setup');
-  const [selectedChords, setSelectedChords] = useState([]);
-  const [intervalSec, setIntervalSec] = useState(4);
-  const [bpm, setBpm] = useState(80);
-  const [enableMic, setEnableMic] = useState(false);
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [switchCount, setSwitchCount] = useState(0);
-  const [beat, setBeat] = useState(false);
-  const [accuracy, setAccuracy] = useState(null);
-  const [chordAccuracies, setChordAccuracies] = useState({});
-  const [feedback, setFeedback] = useState(null); // 'correct'|'incorrect'|null
-  const [xpToast, setXpToast] = useState(null);
-  const [countdown, setCountdown] = useState(null);
+  for (const chord of chords) {
+    if (!chord.frequencies) continue;
+    let score = 0;
+    let matched = 0;
 
-  const timerRef = useRef(null);
-  const switchRef = useRef(null);
-  const metroRef = useRef(null);
-  const audioRef = useRef(null);
-  const analyserRef = useRef(null);
-  const rafRef = useRef(null);
-  const startTimeRef = useRef(null);
-  const currentIdxRef = useRef(0);
-  const accuracyHistRef = useRef({});
-  const countdownRef = useRef(null);
-
-  const stopAll = useCallback(() => {
-    clearInterval(timerRef.current);
-    clearInterval(switchRef.current);
-    clearInterval(metroRef.current);
-    clearInterval(countdownRef.current);
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    if (audioRef.current) audioRef.current.getTracks().forEach(t => t.stop());
-  }, []);
-
-  useEffect(() => () => stopAll(), [stopAll]);
-
-  const detectPitch = useCallback(() => {
-    if (!analyserRef.current) return;
-    const buf = new Float32Array(analyserRef.current.fftSize);
-    analyserRef.current.getFloatTimeDomainData(buf);
-    const ctx = analyserRef.current.context;
-    const freq = autocorrelate(buf, ctx.sampleRate);
-    if (freq > 0) {
-      const targetChord = CHORDS.find(c => c.id === selectedChords[currentIdxRef.current]);
-      if (targetChord) {
-        const acc = freqMatchesChord([freq, freq * 2, freq * 3], targetChord);
-        setAccuracy(acc);
-        setFeedback(acc > 55 ? 'correct' : acc > 25 ? 'partial' : null);
-        accuracyHistRef.current[targetChord.id] = acc;
+    for (const detFreq of detectedFreqs) {
+      for (const chordFreq of chord.frequencies) {
+        // Check across octaves
+        for (let oct = -2; oct <= 2; oct++) {
+          const octaveFreq = chordFreq * Math.pow(2, oct);
+          const ratio = detFreq / octaveFreq;
+          if (ratio > 0.95 && ratio < 1.05) {
+            score += 1 / (Math.abs(ratio - 1) + 0.01);
+            matched++;
+            break;
+          }
+        }
       }
     }
-    rafRef.current = requestAnimationFrame(detectPitch);
-  }, [selectedChords]);
 
-  const startSession = async () => {
-    if (selectedChords.length < 2) return;
-    setPhase('playing');
-    setCurrentIdx(0);
-    currentIdxRef.current = 0;
-    setElapsed(0);
-    setSwitchCount(0);
-    accuracyHistRef.current = {};
-    startTimeRef.current = Date.now();
+    if (matched === 0) continue;
+    const coverage = matched / chord.frequencies.length;
+    const finalScore = score * coverage;
 
-    // Mic setup
-    if (enableMic) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioRef.current = stream;
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 2048;
-        analyserRef.current = analyser;
-        audioCtx.createMediaStreamSource(stream).connect(analyser);
-        rafRef.current = requestAnimationFrame(detectPitch);
-      } catch {}
+    if (finalScore > bestScore) {
+      bestScore = finalScore;
+      bestMatch = { chord, score: Math.min(100, Math.round(coverage * 100)), matched };
     }
+  }
 
-    // Timers
-    timerRef.current = setInterval(() => setElapsed(Math.round((Date.now() - startTimeRef.current) / 1000)), 1000);
+  return bestScore > 0.5 ? bestMatch : null;
+}
 
-    let beat = 0;
-    metroRef.current = setInterval(() => {
-      setBeat(b => !b);
-      playMetronomeClick(beat % 4 === 0);
-      beat++;
-    }, (60 / bpm) * 1000);
+/**
+ * Extract dominant frequency peaks from FFT data
+ */
+export function extractFrequencyPeaks(analyser, sampleRate) {
+  const bufferLength = analyser.frequencyBinCount;
+  const dataArray = new Uint8Array(bufferLength);
+  analyser.getByteFrequencyData(dataArray);
 
-    // Chord switch with countdown
-    let cdVal = intervalSec;
-    setCountdown(cdVal);
-    countdownRef.current = setInterval(() => {
-      cdVal--;
-      if (cdVal <= 0) {
-        cdVal = intervalSec;
-        setCurrentIdx(i => {
-          const next = (i + 1) % selectedChords.length;
-          currentIdxRef.current = next;
-          return next;
-        });
-        setSwitchCount(c => c + 1);
-        setAccuracy(null);
-        setFeedback(null);
+  const peaks = [];
+  const minHz = 60;
+  const maxHz = 1400;
+  const binSize = sampleRate / (analyser.fftSize);
+
+  for (let i = Math.floor(minHz / binSize); i < Math.min(bufferLength, Math.ceil(maxHz / binSize)); i++) {
+    if (dataArray[i] > 100) {
+      const freq = i * binSize;
+      // Only keep local maxima
+      if (dataArray[i] >= (dataArray[i - 1] || 0) && dataArray[i] >= (dataArray[i + 1] || 0)) {
+        peaks.push({ freq, magnitude: dataArray[i] });
       }
-      setCountdown(cdVal);
-    }, 1000);
-  };
-
-  const endSession = async () => {
-    stopAll();
-    const duration = Math.round((Date.now() - startTimeRef.current) / 1000);
-    setElapsed(duration);
-    setChordAccuracies({ ...accuracyHistRef.current });
-    setPhase('summary');
-    if (currentUser) {
-      const avgAcc = Object.values(accuracyHistRef.current);
-      const perfect = avgAcc.length > 0 && avgAcc.every(a => a >= 70);
-      const result = await logPracticeSession(currentUser.uid, {
-        chords: selectedChords, duration, switchCount,
-        chordAccuracy: accuracyHistRef.current, perfect,
-      });
-      await refreshProfile();
-      if (result?.xpResult) setXpToast({ xp: result.xpResult.xpGained, message: 'Session complete!' });
     }
-  };
-
-  const fmt = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
-  const currentChord = CHORDS.find(c => c.id === selectedChords[currentIdx]);
-
-  // ── SETUP ──────────────────────────────────────────────────────────
-  if (phase === 'setup') {
-    return (
-      <div>
-        <h1 className="page-title">Practice Mode</h1>
-        <p className="page-subtitle">Select chords, configure your session, and start playing.</p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 24 }}>
-          <div className="card">
-            <h2 className="section-title">Select Chords (2–4)</h2>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-              {CHORDS.map(chord => (
-                <button key={chord.id}
-                  className={`btn ${selectedChords.includes(chord.id) ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                  onClick={() => setSelectedChords(prev => prev.includes(chord.id) ? prev.filter(c => c !== chord.id) : prev.length < 4 ? [...prev, chord.id] : prev)}
-                  style={{ fontFamily: 'var(--font-serif)', fontSize: 16, fontStyle: 'italic' }}
-                >
-                  {chord.id}
-                </button>
-              ))}
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text-3)' }}>
-              {selectedChords.length < 2 ? `Select ${2 - selectedChords.length} more chord${selectedChords.length === 1 ? '' : 's'}` : `✓ ${selectedChords.join(' → ')}`}
-            </div>
-          </div>
-
-          <div className="card">
-            <h2 className="section-title">Session Settings</h2>
-            <div className="form-group">
-              <label className="form-label">Switch Every: {intervalSec}s</label>
-              <input type="range" min={2} max={16} value={intervalSec}
-                onChange={e => setIntervalSec(Number(e.target.value))}
-                style={{ width: '100%', accentColor: 'var(--accent)' }} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Metronome</label>
-              <Metronome bpm={bpm} setBpm={setBpm} active={false} beat={false} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px', background: 'var(--bg-2)', borderRadius: 10, marginBottom: 16 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', flex: 1 }}>
-                <div style={{
-                  width: 40, height: 22, borderRadius: 11, background: enableMic ? 'var(--accent)' : 'var(--bg-3)',
-                  position: 'relative', transition: 'background 0.2s', cursor: 'pointer', flexShrink: 0,
-                }} onClick={() => setEnableMic(m => !m)}>
-                  <div style={{
-                    position: 'absolute', top: 2, left: enableMic ? 20 : 2, width: 18, height: 18,
-                    borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
-                  }} />
-                </div>
-                <div>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 13 }}>🎤 Chord Detection</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Use microphone to detect your playing accuracy</div>
-                </div>
-              </label>
-            </div>
-            <button className="btn btn-primary btn-full btn-lg" onClick={startSession} disabled={selectedChords.length < 2}>
-              ▶ Start Session
-            </button>
-          </div>
-        </div>
-      </div>
-    );
   }
 
-  // ── PLAYING ────────────────────────────────────────────────────────
-  if (phase === 'playing') {
-    const feedbackColor = feedback === 'correct' ? 'var(--green)' : feedback === 'partial' ? 'var(--gold)' : 'var(--accent)';
+  return peaks
+    .sort((a, b) => b.magnitude - a.magnitude)
+    .slice(0, 8)
+    .map(p => p.freq);
+}
 
-    return (
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-          <h1 className="page-title" style={{ margin: 0 }}>Practicing</h1>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, color: 'var(--gold)' }}>{fmt(elapsed)}</div>
-            <button className="btn btn-ghost" onClick={endSession}>End Session</button>
-          </div>
-        </div>
+// ── V2 ALIASES ─────────────────────────────────────────────────────
+// These match what pages/components import
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20, marginBottom: 20 }}>
-          {/* Main chord display */}
-          <div className="card" style={{ textAlign: 'center', gridColumn: 'span 1' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'var(--font-display)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
-              Play this chord
-            </div>
-            <div className="chord-prompt" key={currentIdx} style={{ color: feedbackColor, fontSize: 80, padding: '30px 0' }}>
-              {selectedChords[currentIdx]}
-            </div>
-            {currentChord && <div style={{ color: 'var(--text-2)', fontSize: 13, marginBottom: 12 }}>{currentChord.name}</div>}
+const CHORD_VOICINGS = {
+  'C':  [null, 3, 2, 0, 1, 0],
+  'D':  [null, null, 0, 2, 3, 2],
+  'E':  [0, 2, 2, 1, 0, 0],
+  'G':  [3, 2, 0, 0, 0, 3],
+  'A':  [null, 0, 2, 2, 2, 0],
+  'Am': [null, 0, 2, 2, 1, 0],
+  'Em': [0, 2, 2, 0, 0, 0],
+  'Dm': [null, null, 0, 2, 3, 1],
+  'F':  [1, 1, 2, 3, 3, 1],
+  'Bm': [null, 2, 4, 4, 3, 2],
+  'B':  [null, 2, 4, 4, 4, 2],
+  'C7': [null, 3, 2, 3, 1, 0],
+  'D7': [null, null, 0, 2, 1, 2],
+  'E7': [0, 2, 0, 1, 0, 0],
+  'G7': [3, 2, 0, 0, 0, 1],
+  'A7': [null, 0, 2, 0, 2, 0],
+  'B7': [null, 2, 1, 2, 0, 2],
+  'Dsus2': [null, null, 0, 2, 3, 0],
+  'Dsus4': [null, null, 0, 2, 3, 3],
+  'Asus2': [null, 0, 2, 2, 0, 0],
+  'Asus4': [null, 0, 2, 2, 3, 0],
+};
 
-            {/* Countdown ring */}
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-              <div style={{
-                width: 56, height: 56, borderRadius: '50%',
-                background: `conic-gradient(var(--accent) ${(countdown / intervalSec) * 360}deg, var(--bg-3) 0deg)`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'background 0.3s',
-              }}>
-                <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 16, color: 'var(--text-1)' }}>{countdown}</span>
-                </div>
-              </div>
-            </div>
+const BASE_FREQS = [82.41, 110.00, 146.83, 196.00, 246.94, 329.63];
+const semi = (n) => Math.pow(2, n / 12);
 
-            {enableMic && (
-              <div style={{ padding: '8px 16px', background: 'var(--bg-2)', borderRadius: 10, marginBottom: 8 }}>
-                {accuracy !== null ? (
-                  <div style={{ color: feedbackColor, fontFamily: 'var(--font-display)', fontWeight: 700 }}>
-                    {feedback === 'correct' ? '✓ Sounds right!' : feedback === 'partial' ? '≈ Getting closer' : '× Try again'} — {accuracy}%
-                  </div>
-                ) : (
-                  <div style={{ color: 'var(--text-3)', fontSize: 13 }}>🎤 Listening for your chord...</div>
-                )}
-              </div>
-            )}
+export function playChordSound(chordId) {
+  const ctx = getCtx();
+  const voicing = CHORD_VOICINGS[chordId];
+  if (!voicing) return;
+  const now = ctx.currentTime;
+  voicing.forEach((fret, i) => {
+    if (fret === null) return;
+    const freq = BASE_FREQS[i] * semi(fret);
+    playString(ctx, freq, now + i * 0.03, 2.2, 0.16);
+  });
+}
 
-            <button className="btn btn-ghost btn-sm" onClick={() => playChordSound(selectedChords[currentIdx])}>
-              🔊 Hear Reference
-            </button>
-          </div>
+export function playMetronomeClick(accent = false) {
+  playClick(accent);
+}
 
-          {/* Chord diagram */}
-          {currentChord && (
-            <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ fontSize: 13, color: 'var(--text-3)', fontFamily: 'var(--font-display)', fontWeight: 700, marginBottom: 12, textTransform: 'uppercase', letterSpacing: 1 }}>Fingering</div>
-              <div className="chord-svg-wrap">
-                <ChordDiagram chord={currentChord} size={1.1} />
-              </div>
-              <div style={{ marginTop: 12, fontSize: 13, color: 'var(--text-2)', textAlign: 'center' }}>{currentChord.tips}</div>
-            </div>
-          )}
-        </div>
+export function playXPSound() {
+  const ctx = getCtx();
+  [523, 659, 784, 1047].forEach((freq, i) => {
+    const t = ctx.currentTime + i * 0.1;
+    playString(ctx, freq, t, 0.3, 0.15);
+  });
+}
 
-        {/* Queue & Metronome */}
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
-            {selectedChords.map((id, i) => (
-              <div key={id} style={{
-                padding: '8px 20px', borderRadius: 10,
-                fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
-                background: i === currentIdx ? 'var(--accent-dim)' : 'var(--bg-2)',
-                color: i === currentIdx ? 'var(--accent)' : 'var(--text-3)',
-                border: `1px solid ${i === currentIdx ? 'var(--border-accent)' : 'var(--border)'}`,
-                transition: 'all 0.2s',
-              }}>{id}</div>
-            ))}
-          </div>
-          <Metronome bpm={bpm} setBpm={setBpm} active={true} beat={beat} />
-        </div>
-      </div>
-    );
-  }
-
-  // ── SUMMARY ────────────────────────────────────────────────────────
-  if (phase === 'summary') {
-    const accVals = Object.values(chordAccuracies);
-    const avgAcc = accVals.length ? Math.round(accVals.reduce((a, b) => a + b, 0) / accVals.length) : null;
-
-    return (
-      <div style={{ maxWidth: 520, margin: '0 auto', textAlign: 'center' }}>
-        <div style={{ fontSize: 64, marginBottom: 12 }}>🎸</div>
-        <h1 className="page-title">Session Complete!</h1>
-        <p className="page-subtitle">Great work. Every rep builds muscle memory.</p>
-
-        <div className="card" style={{ marginBottom: 24, textAlign: 'left' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 20 }}>
-            {[
-              { v: fmt(elapsed), l: 'Time', c: 'var(--gold)' },
-              { v: switchCount, l: 'Switches', c: 'var(--accent)' },
-              { v: selectedChords.length, l: 'Chords', c: 'var(--green)' },
-            ].map(s => (
-              <div key={s.l} style={{ textAlign: 'center' }}>
-                <div className="stat-value" style={{ color: s.c, fontSize: 28 }}>{s.v}</div>
-                <div className="stat-label">{s.l}</div>
-              </div>
-            ))}
-          </div>
-
-          {enableMic && Object.keys(chordAccuracies).length > 0 && (
-            <>
-              <div className="divider" />
-              <div style={{ marginBottom: 8, fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14 }}>Chord Accuracy</div>
-              {Object.entries(chordAccuracies).map(([chord, acc]) => (
-                <div key={chord} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                  <div style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 18, width: 40, flexShrink: 0 }}>{chord}</div>
-                  <div className="progress-bar" style={{ flex: 1 }}>
-                    <div className="progress-fill" style={{ width: `${acc}%`, background: acc >= 70 ? 'var(--green)' : acc >= 40 ? 'var(--gold)' : 'var(--red)' }} />
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 13, width: 36, color: acc >= 70 ? 'var(--green)' : acc >= 40 ? 'var(--gold)' : 'var(--red)' }}>{acc}%</div>
-                </div>
-              ))}
-              {avgAcc !== null && (
-                <div style={{ textAlign: 'center', marginTop: 12, color: 'var(--text-2)', fontSize: 13 }}>
-                  Average accuracy: <strong style={{ color: 'var(--accent)' }}>{avgAcc}%</strong>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-          <button className="btn btn-primary btn-lg" onClick={() => { setPhase('setup'); setAccuracy(null); setFeedback(null); }}>
-            Practice Again
-          </button>
-        </div>
-
-        {xpToast && <XPToast {...xpToast} onDone={() => setXpToast(null)} />}
-      </div>
-    );
-  }
+export function playLevelUpSound() {
+  const ctx = getCtx();
+  [523, 659, 784, 1047, 1318].forEach((freq, i) => {
+    const t = ctx.currentTime + i * 0.12;
+    playString(ctx, freq, t, 0.5, 0.2);
+  });
 }
