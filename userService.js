@@ -1,194 +1,172 @@
-// src/pages/RecordingStudio.jsx - V2
-import React, { useState, useRef, useEffect } from 'react';
-import { useAuth } from '../services/AuthContext';
-import { saveRecording } from '../services/userService';
-import { XPToast } from '../components/XPToast';
+// src/pages/Strumming.jsx
+import React, { useState, useEffect, useRef } from 'react';
+import { STRUMMING_PATTERNS } from '../data/chords';
 
-export default function RecordingStudio() {
-  const { currentUser, userProfile, refreshProfile } = useAuth();
-  const [status, setStatus] = useState('idle'); // idle | recording | stopped
-  const [recordings, setRecordings] = useState([]);
+function StrumBeat({ beat, active }) {
+  const isDown = beat === 'D';
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 4,
+    }}>
+      <div style={{
+        width: 36,
+        height: 36,
+        borderRadius: 8,
+        background: active ? (isDown ? 'var(--accent)' : 'var(--gold)') : 'var(--bg-2)',
+        border: `2px solid ${active ? (isDown ? 'var(--accent)' : 'var(--gold)') : 'var(--border)'}`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 18,
+        transition: 'all 0.08s',
+        boxShadow: active ? `0 0 12px ${isDown ? 'var(--accent-glow)' : 'var(--gold-dim)'}` : 'none',
+      }}>
+        {isDown ? '↓' : '↑'}
+      </div>
+      <div style={{ fontSize: 10, fontFamily: 'var(--font-display)', fontWeight: 700, color: active ? 'var(--text-1)' : 'var(--text-3)', textTransform: 'uppercase' }}>
+        {isDown ? 'Down' : 'Up'}
+      </div>
+    </div>
+  );
+}
+
+function PatternPlayer({ pattern }) {
+  const [playing, setPlaying] = useState(false);
+  const [bpm, setBpm] = useState(pattern.bpm);
+  const [activeBeat, setActiveBeat] = useState(-1);
   const [elapsed, setElapsed] = useState(0);
-  const [error, setError] = useState('');
-  const [xpToast, setXpToast] = useState(null);
-  const [recordingName, setRecordingName] = useState('');
-
-  const mediaRef = useRef(null);
-  const chunksRef = useRef([]);
+  const intervalRef = useRef(null);
   const timerRef = useRef(null);
-  const waveRef = useRef(null);
-  const canvasRef = useRef(null);
-  const analyserRef = useRef(null);
-  const rafRef = useRef(null);
+  const beatRef = useRef(0);
+  const startRef = useRef(null);
 
-  const savedRecordings = userProfile?.recordingHistory || [];
-
-  useEffect(() => () => {
+  const stop = () => {
+    clearInterval(intervalRef.current);
     clearInterval(timerRef.current);
-    cancelAnimationFrame(rafRef.current);
-  }, []);
-
-  const drawWaveform = () => {
-    if (!analyserRef.current || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const data = new Uint8Array(analyserRef.current.frequencyBinCount);
-    analyserRef.current.getByteTimeDomainData(data);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#a278ff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    const sliceW = canvas.width / data.length;
-    let x = 0;
-    for (let i = 0; i < data.length; i++) {
-      const v = data[i] / 128.0;
-      const y = (v * canvas.height) / 2;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-      x += sliceW;
-    }
-    ctx.stroke();
-    rafRef.current = requestAnimationFrame(drawWaveform);
+    setPlaying(false);
+    setActiveBeat(-1);
+    beatRef.current = 0;
+    setElapsed(0);
   };
 
-  const startRecording = async () => {
-    setError('');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      waveRef.current = stream;
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      analyserRef.current = analyser;
-      audioCtx.createMediaStreamSource(stream).connect(analyser);
+  const start = () => {
+    setPlaying(true);
+    startRef.current = Date.now();
+    beatRef.current = 0;
 
-      const mr = new MediaRecorder(stream);
-      mediaRef.current = mr;
-      chunksRef.current = [];
-      mr.ondataavailable = e => chunksRef.current.push(e.data);
-      mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        const url = URL.createObjectURL(blob);
-        setRecordings(prev => [...prev, { url, blob, date: new Date().toISOString(), duration: elapsed, name: recordingName || `Recording ${prev.length + 1}` }]);
-        setStatus('stopped');
-      };
-      mr.start();
-      setStatus('recording');
-      setElapsed(0);
-      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
-      drawWaveform();
-    } catch {
-      setError('Microphone access denied. Please allow mic access.');
-    }
+    // Advance beat
+    const msPerBeat = (60 / bpm) * 1000 / 2; // 8th notes
+    intervalRef.current = setInterval(() => {
+      setActiveBeat(beatRef.current % pattern.beats.length);
+      beatRef.current++;
+    }, msPerBeat);
+
+    // Elapsed
+    timerRef.current = setInterval(() => {
+      setElapsed(Math.round((Date.now() - startRef.current) / 1000));
+    }, 1000);
   };
 
-  const stopRecording = () => {
-    clearInterval(timerRef.current);
-    cancelAnimationFrame(rafRef.current);
-    if (mediaRef.current?.state !== 'inactive') mediaRef.current?.stop();
-    waveRef.current?.getTracks().forEach(t => t.stop());
-  };
+  useEffect(() => () => stop(), []);
 
-  const saveToProfile = async (rec) => {
-    if (!currentUser) return;
-    const result = await saveRecording(currentUser.uid, { name: rec.name, duration: rec.duration });
-    await refreshProfile();
-    setXpToast({ xp: result.xpGained, message: 'Recording saved!' });
-  };
-
-  const deleteLocal = (i) => setRecordings(prev => prev.filter((_, idx) => idx !== i));
-
-  const fmt = s => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+  const fmt = (s) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
 
   return (
-    <div>
-      <h1 className="page-title">Recording Studio</h1>
-      <p className="page-subtitle">Record your practice, play it back, and track your improvement.</p>
-
-      {/* Recorder */}
-      <div className="card" style={{ marginBottom: 24 }}>
-        <h2 className="section-title">New Recording</h2>
-
-        {error && <div className="error-msg" style={{ marginBottom: 16 }}>{error}</div>}
-
-        {status === 'idle' && (
-          <div>
-            <div className="form-group">
-              <label className="form-label">Recording Name (optional)</label>
-              <input className="form-input" placeholder="e.g. G to D practice" value={recordingName} onChange={e => setRecordingName(e.target.value)} style={{ maxWidth: 300 }} />
-            </div>
-            <button className="btn btn-primary btn-lg" onClick={startRecording}>
-              🎙 Start Recording
-            </button>
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, margin: 0 }}>{pattern.name}</h2>
+            <span className={`badge ${pattern.difficulty === 'Beginner' ? 'badge-green' : 'badge-gold'}`}>{pattern.difficulty}</span>
           </div>
-        )}
-
-        {status === 'recording' && (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
-              <div style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--red)', animation: 'pulse 1s infinite' }} />
-              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 20, color: 'var(--red)' }}>{fmt(elapsed)}</div>
-              <div style={{ fontSize: 13, color: 'var(--text-3)' }}>Recording...</div>
-            </div>
-            <canvas ref={canvasRef} width={500} height={60} style={{ width: '100%', maxWidth: 500, height: 60, background: 'var(--bg-2)', borderRadius: 8, marginBottom: 16, display: 'block' }} />
-            <button className="btn btn-ghost" onClick={stopRecording}>⏹ Stop Recording</button>
-          </div>
-        )}
-
-        {status === 'stopped' && (
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button className="btn btn-secondary" onClick={() => { setStatus('idle'); setRecordingName(''); }}>+ New Recording</button>
-          </div>
+          <p style={{ color: 'var(--text-2)', fontSize: 13, margin: 0 }}>{pattern.description}</p>
+        </div>
+        {playing && (
+          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--gold)' }}>{fmt(elapsed)}</div>
         )}
       </div>
 
-      {/* Local recordings */}
-      {recordings.length > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <h2 className="section-title">This Session</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {recordings.map((rec, i) => (
-              <div key={i} style={{ padding: '14px 16px', background: 'var(--bg-2)', borderRadius: 12, border: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <div>
-                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14 }}>{rec.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-3)' }}>{fmt(rec.duration)} · {new Date(rec.date).toLocaleTimeString()}</div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn btn-success btn-sm" onClick={() => saveToProfile(rec)}>💾 Save +75 XP</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => deleteLocal(i)}>🗑</button>
-                  </div>
-                </div>
-                <audio controls src={rec.url} style={{ width: '100%', height: 36 }} />
-              </div>
-            ))}
+      {/* Beat visualizer */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+        {pattern.beats.map((beat, i) => (
+          <StrumBeat key={i} beat={beat} active={playing && activeBeat === i} />
+        ))}
+      </div>
+
+      {/* Notation string */}
+      <div style={{ fontFamily: 'var(--font-body)', fontSize: 16, letterSpacing: 4, color: 'var(--text-2)', marginBottom: 20, padding: '10px 16px', background: 'var(--bg-2)', borderRadius: 10 }}>
+        {pattern.beats.map((b, i) => (
+          <span key={i} style={{ color: playing && activeBeat === i ? 'var(--accent)' : b === 'D' ? 'var(--text-1)' : 'var(--text-3)' }}>
+            {b}{i < pattern.beats.length - 1 ? ' ' : ''}
+          </span>
+        ))}
+      </div>
+
+      {/* BPM control */}
+      <div style={{ marginBottom: 20 }}>
+        <label className="form-label">Tempo: {bpm} BPM</label>
+        <input
+          type="range" min={40} max={160} value={bpm}
+          onChange={e => { setBpm(Number(e.target.value)); if (playing) { stop(); } }}
+          style={{ width: '100%', accentColor: 'var(--accent)' }}
+          disabled={playing}
+        />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-display)' }}>
+          <span>40 BPM (Slow)</span><span>160 BPM (Fast)</span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        {!playing ? (
+          <button className="btn btn-primary" onClick={start}>▶ Start Practice</button>
+        ) : (
+          <button className="btn btn-ghost" onClick={stop}>⏹ Stop</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function Strumming() {
+  return (
+    <div>
+      <h1 className="page-title">Strumming Lessons</h1>
+      <p className="page-subtitle">Master these fundamental patterns to play thousands of songs.</p>
+
+      {/* Tips */}
+      <div className="card" style={{ marginBottom: 28, background: 'var(--accent-dim)', borderColor: 'var(--border-accent)' }}>
+        <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--accent)', marginBottom: 8 }}>
+          🎸 How to Practice
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.8 }}>
+          1. Start slow — accuracy matters more than speed.<br/>
+          2. Keep your wrist loose and relaxed.<br/>
+          3. Even downstrokes that miss strings still keep the rhythm.<br/>
+          4. Build speed gradually over days, not minutes.
+        </div>
+      </div>
+
+      {STRUMMING_PATTERNS.map(p => (
+        <PatternPlayer key={p.id} pattern={p} />
+      ))}
+
+      {/* Legend */}
+      <div className="card">
+        <h3 className="section-title">Pattern Legend</h3>
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 6, background: 'var(--accent-dim)', border: '1px solid var(--border-accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>↓</div>
+            <span style={{ color: 'var(--text-2)' }}>D = Downstroke (strum toward the floor)</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 6, background: 'var(--gold-dim)', border: '1px solid rgba(240,192,96,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--gold)' }}>↑</div>
+            <span style={{ color: 'var(--text-2)' }}>U = Upstroke (strum toward the ceiling)</span>
           </div>
         </div>
-      )}
-
-      {/* Saved recordings from profile */}
-      {savedRecordings.length > 0 && (
-        <div className="card">
-          <h2 className="section-title">Saved Recordings ({savedRecordings.length})</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {[...savedRecordings].reverse().map((rec, i) => (
-              <div key={i} style={{ padding: '12px 16px', background: 'var(--bg-2)', borderRadius: 10, border: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 13 }}>{rec.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{fmt(rec.duration || 0)} · {new Date(rec.date).toLocaleDateString()}</div>
-                </div>
-                <span className="badge badge-green">✓ Saved</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>
-            Note: Audio files are stored locally in your browser session. Only metadata (name, duration) is saved to your profile.
-          </div>
-        </div>
-      )}
-
-      <style>{`@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }`}</style>
-      {xpToast && <XPToast {...xpToast} onDone={() => setXpToast(null)} />}
+      </div>
     </div>
   );
 }
