@@ -1,127 +1,133 @@
-// src/components/ChordDiagram.jsx
-import React from 'react';
+# 🎸 GuitarCoach — V1
 
-/**
- * Renders a guitar chord diagram as SVG.
- * frets: array of 6 values (string 6 to 1), 'x' = muted, 0 = open, int = fret
- * fingers: [{str, fret, finger}] - str is 1-6
- */
-export default function ChordDiagram({ chord, size = 1 }) {
-  if (!chord?.svgData) return null;
+> Learn guitar chords, practice songs, and track your progress.
 
-  const { frets, fingers = [], startFret = 0 } = chord.svgData;
+---
 
-  // Layout constants
-  const W = 140 * size;
-  const H = 170 * size;
-  const STRINGS = 6;
-  const FRET_ROWS = 5;
-  const leftPad = 30 * size;
-  const rightPad = 14 * size;
-  const topPad = 40 * size;
-  const bottomPad = 20 * size;
+## ✅ Features
 
-  const gridW = W - leftPad - rightPad;
-  const gridH = H - topPad - bottomPad;
-  const strGap = gridW / (STRINGS - 1);
-  const fretGap = gridH / FRET_ROWS;
+| Feature | Status |
+|---|---|
+| Email/password auth | ✅ |
+| User profile (streak, chords, history) | ✅ |
+| Real-time guitar tuner (mic pitch detection) | ✅ |
+| Interactive chord library (C D E G A Am Em Dm) | ✅ |
+| Chord practice mode with metronome | ✅ |
+| Strumming pattern lessons | ✅ |
+| Song library (15 songs) | ✅ |
+| Smart song recommendations | ✅ |
+| Progress dashboard with charts | ✅ |
+| Mobile-responsive dark UI | ✅ |
 
-  const dotR = 9 * size;
+---
 
-  const strX = (i) => leftPad + i * strGap; // i: 0 = string 6, 5 = string 1
-  const fretY = (f) => topPad + f * fretGap; // f: 0 = nut
+## 🚀 Quick Start
 
-  // Determine if barre
-  const numericFrets = frets.filter(f => typeof f === 'number' && f > 0);
-  const minFret = numericFrets.length ? Math.min(...numericFrets) : 0;
+### 1. Clone & Install
 
-  return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block' }}>
-      {/* Chord name */}
-      <text x={W / 2} y={18 * size} textAnchor="middle"
-        fontFamily="'Fraunces', serif"
-        fontSize={16 * size}
-        fontStyle="italic"
-        fill="var(--text-1)">
-        {chord.name}
-      </text>
+```bash
+git clone https://github.com/YOUR_USERNAME/guitarcoach.git
+cd guitarcoach
+npm install
+```
 
-      {/* Nut / top line */}
-      <rect x={leftPad} y={topPad} width={gridW} height={3 * size}
-        fill={startFret > 0 ? 'none' : 'var(--text-1)'} />
+### 2. Set Up Firebase
 
-      {/* Fret lines */}
-      {Array.from({ length: FRET_ROWS + 1 }).map((_, i) => (
-        <line key={i}
-          x1={leftPad} y1={topPad + i * fretGap}
-          x2={leftPad + gridW} y2={topPad + i * fretGap}
-          stroke="var(--border)" strokeWidth={i === 0 ? 1 : 1.5 * size}
-        />
-      ))}
+1. Go to [Firebase Console](https://console.firebase.google.com)
+2. Create a new project
+3. Enable **Authentication** → Email/Password
+4. Create a **Firestore Database** (start in test mode)
+5. Go to Project Settings → Add Web App → copy config
 
-      {/* String lines */}
-      {Array.from({ length: STRINGS }).map((_, i) => (
-        <line key={i}
-          x1={strX(i)} y1={topPad}
-          x2={strX(i)} y2={topPad + gridH}
-          stroke="var(--text-3)" strokeWidth={1 * size}
-        />
-      ))}
+### 3. Configure Environment
 
-      {/* Fret position label */}
-      {startFret > 0 && (
-        <text x={leftPad - 8 * size} y={topPad + fretGap * 0.7}
-          textAnchor="end"
-          fontSize={10 * size}
-          fill="var(--text-2)"
-          fontFamily="'DM Mono', monospace">
-          {startFret}fr
-        </text>
-      )}
+```bash
+cp .env.example .env
+```
 
-      {/* Open / muted indicators */}
-      {frets.map((f, i) => {
-        const strIdx = STRINGS - 1 - i; // frets[0] = string 6 = leftmost
-        const cx = strX(strIdx);
-        const cy = topPad - 12 * size;
-        if (f === 'x') {
-          return (
-            <g key={i}>
-              <line x1={cx - 5 * size} y1={cy - 5 * size} x2={cx + 5 * size} y2={cy + 5 * size} stroke="var(--red)" strokeWidth={1.5 * size} />
-              <line x1={cx + 5 * size} y1={cy - 5 * size} x2={cx - 5 * size} y2={cy + 5 * size} stroke="var(--red)" strokeWidth={1.5 * size} />
-            </g>
-          );
-        }
-        if (f === 0) {
-          return (
-            <circle key={i} cx={cx} cy={cy} r={5 * size}
-              fill="none" stroke="var(--text-2)" strokeWidth={1.5 * size} />
-          );
-        }
-        return null;
-      })}
+Fill in your Firebase credentials in `.env`.
 
-      {/* Finger dots */}
-      {fingers.map((d, i) => {
-        // d.str: 1 = high e (right), 6 = low E (left)
-        const strIdx = STRINGS - d.str;
-        const cx = strX(strIdx);
-        const cy = fretY(d.fret) - fretGap / 2;
-        return (
-          <g key={i}>
-            <circle cx={cx} cy={cy} r={dotR}
-              fill="var(--accent)" />
-            <text x={cx} y={cy + 4 * size}
-              textAnchor="middle"
-              fontSize={9 * size}
-              fill="#fff"
-              fontFamily="'Syne', sans-serif"
-              fontWeight="700">
-              {d.finger}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
+### 4. Run Locally
+
+```bash
+npm start
+```
+
+Open [http://localhost:3000](http://localhost:3000)
+
+---
+
+## 🌐 Deploy to Render
+
+1. Push code to GitHub
+2. Go to [render.com](https://render.com) → New → Static Site
+3. Connect your GitHub repo
+4. Build command: `npm run build`
+5. Publish directory: `build`
+6. Add environment variables (your Firebase config)
+7. Deploy!
+
+---
+
+## 📁 Project Structure
+
+```
+src/
+├── components/
+│   ├── Sidebar.jsx        # Navigation sidebar
+│   ├── ChordDiagram.jsx   # SVG chord diagram renderer
+│   └── Toast.jsx          # Notification toast
+├── pages/
+│   ├── AuthPage.jsx       # Login/Signup
+│   ├── Dashboard.jsx      # Home dashboard
+│   ├── Tuner.jsx          # Guitar tuner (mic pitch detection)
+│   ├── Chords.jsx         # Chord library
+│   ├── Practice.jsx       # Chord switching practice mode
+│   ├── Strumming.jsx      # Strumming pattern lessons
+│   ├── Songs.jsx          # Song library
+│   └── Progress.jsx       # Progress charts and history
+├── services/
+│   ├── firebase.js        # Firebase app config
+│   ├── AuthContext.js     # Auth state provider
+│   └── userService.js     # Firestore CRUD operations
+├── data/
+│   └── chords.js          # Chord + song + strumming data
+└── index.css              # Global styles (dark theme)
+```
+
+---
+
+## 🔐 Firestore Security Rules (Recommended)
+
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
 }
+```
+
+---
+
+## 🛠 Tech Stack
+
+- **React 18** — Frontend
+- **Firebase 10** — Auth + Firestore
+- **React Router v6** — Navigation
+- **Recharts** — Progress charts
+- **Web Audio API** — Microphone pitch detection
+- **Google Fonts** — Syne + Fraunces + DM Mono
+
+---
+
+## 🗺 V2 Roadmap
+
+- [ ] AI chord recognition (listen & detect)
+- [ ] Video lessons
+- [ ] Community song uploads
+- [ ] Advanced chord library (barre chords, 7ths)
+- [ ] Subscription tier
+- [ ] Mobile app (React Native)
