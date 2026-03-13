@@ -1,262 +1,187 @@
-// src/pages/AuthPage.jsx - V2
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../services/AuthContext';
+// src/pages/Tuner.jsx
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-const EyeIcon = ({ open }) => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    {open ? (
-      <>
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-        <circle cx="12" cy="12" r="3"/>
-      </>
-    ) : (
-      <>
-        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-        <line x1="1" y1="1" x2="23" y2="23"/>
-      </>
-    )}
-  </svg>
-);
+const NOTE_STRINGS = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
-function PasswordInput({ value, onChange, placeholder, label }) {
-  const [show, setShow] = useState(false);
-  return (
-    <div className="form-group">
-      <label className="form-label">{label}</label>
-      <div style={{ position: 'relative' }}>
-        <input
-          className="form-input"
-          type={show ? 'text' : 'password'}
-          placeholder={placeholder}
-          value={value}
-          onChange={onChange}
-          required
-          style={{ paddingRight: 44 }}
-        />
-        <button
-          type="button"
-          onClick={() => setShow(s => !s)}
-          style={{
-            position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: show ? 'var(--accent)' : 'var(--text-3)',
-            display: 'flex', alignItems: 'center', padding: 0,
-            transition: 'color 0.2s',
-          }}
-        >
-          <EyeIcon open={show} />
-        </button>
-      </div>
-    </div>
-  );
+function freqToNote(freq) {
+  if (!freq || freq < 20) return null;
+  const noteNum = 12 * (Math.log(freq / 440) / Math.log(2));
+  const rounded = Math.round(noteNum);
+  const note = NOTE_STRINGS[(rounded % 12 + 12) % 12];
+  const cents = (noteNum - rounded) * 100;
+  return { note, cents, freq };
 }
 
-function PasswordStrength({ password }) {
-  if (!password) return null;
-  const checks = [
-    password.length >= 8,
-    /[A-Z]/.test(password),
-    /[0-9]/.test(password),
-    /[^A-Za-z0-9]/.test(password),
-  ];
-  const strength = checks.filter(Boolean).length;
-  const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
-  const colors = ['', 'var(--red)', 'var(--gold)', 'var(--accent)', 'var(--green)'];
-  return (
-    <div style={{ marginTop: -12, marginBottom: 16 }}>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-        {[1,2,3,4].map(i => (
-          <div key={i} style={{
-            flex: 1, height: 3, borderRadius: 2,
-            background: i <= strength ? colors[strength] : 'var(--bg-3)',
-            transition: 'background 0.3s',
-          }} />
-        ))}
-      </div>
-      <div style={{ fontSize: 11, color: colors[strength], fontFamily: 'var(--font-display)', fontWeight: 600 }}>
-        {labels[strength]}
-      </div>
-    </div>
-  );
+const GUITAR_STRINGS = [
+  { name: 'E2', freq: 82.41, string: 6 },
+  { name: 'A2', freq: 110.0, string: 5 },
+  { name: 'D3', freq: 146.83, string: 4 },
+  { name: 'G3', freq: 196.0, string: 3 },
+  { name: 'B3', freq: 246.94, string: 2 },
+  { name: 'E4', freq: 329.63, string: 1 },
+];
+
+function autocorrelate(buf, sampleRate) {
+  let SIZE = buf.length;
+  let rms = 0;
+  for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < 0.01) return -1;
+  let r1 = 0, r2 = SIZE - 1;
+  for (let i = 0; i < SIZE / 2; i++) if (Math.abs(buf[i]) < 0.2) { r1 = i; break; }
+  for (let i = 1; i < SIZE / 2; i++) if (Math.abs(buf[SIZE - i]) < 0.2) { r2 = SIZE - i; break; }
+  buf = buf.slice(r1, r2);
+  SIZE = buf.length;
+  const c = new Float32Array(SIZE).fill(0);
+  for (let i = 0; i < SIZE; i++)
+    for (let j = 0; j < SIZE - i; j++)
+      c[i] += buf[j] * buf[j + i];
+  let d = 0;
+  while (c[d] > c[d + 1]) d++;
+  let maxval = -1, maxpos = -1;
+  for (let i = d; i < SIZE; i++) {
+    if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+  }
+  let T0 = maxpos;
+  const x1 = c[T0 - 1], x2 = c[T0], x3 = c[T0 + 1];
+  const a = (x1 + x3 - 2 * x2) / 2;
+  const b = (x3 - x1) / 2;
+  if (a) T0 = T0 - b / (2 * a);
+  return sampleRate / T0;
 }
 
-export default function AuthPage() {
-  const [mode, setMode] = useState('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [username, setUsername] = useState('');
+export default function Tuner() {
+  const [listening, setListening] = useState(false);
+  const [noteInfo, setNoteInfo] = useState(null);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const { login, signup } = useAuth();
-  const navigate = useNavigate();
+  const audioCtxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    if (mode === 'signup' && password !== confirmPassword) {
-      setError('Passwords do not match.');
-      return;
-    }
-    if (mode === 'signup' && password.length < 6) {
-      setError('Password must be at least 6 characters.');
-      return;
-    }
-    setLoading(true);
+  const detect = useCallback(() => {
+    if (!analyserRef.current) return;
+    const buf = new Float32Array(analyserRef.current.fftSize);
+    analyserRef.current.getFloatTimeDomainData(buf);
+    const freq = autocorrelate(buf, audioCtxRef.current.sampleRate);
+    if (freq !== -1) setNoteInfo(freqToNote(freq));
+    rafRef.current = requestAnimationFrame(detect);
+  }, []);
+
+  const start = async () => {
     try {
-      if (mode === 'signup') {
-        await signup(email, password, username);
-      } else {
-        await login(email, password);
-      }
-      navigate('/');
-    } catch (err) {
-      const msg = err.message || '';
-      if (msg.includes('email-already-in-use')) setError('That email is already registered. Try logging in.');
-      else if (msg.includes('user-not-found') || msg.includes('wrong-password') || msg.includes('invalid-credential')) setError('Invalid email or password.');
-      else if (msg.includes('too-many-requests')) setError('Too many attempts. Please wait a moment.');
-      else setError(msg.replace('Firebase: ', '').replace(/\(.*\)/, '') || 'Something went wrong.');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtxRef.current = ctx;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      analyserRef.current = analyser;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      setListening(true);
+      setError('');
+      rafRef.current = requestAnimationFrame(detect);
+    } catch {
+      setError('Microphone access denied. Please allow mic access and try again.');
     }
-    setLoading(false);
   };
 
-  const switchMode = () => {
-    setMode(m => m === 'login' ? 'signup' : 'login');
-    setError('');
-    setPassword('');
-    setConfirmPassword('');
+  const stop = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (audioCtxRef.current) audioCtxRef.current.close();
+    setListening(false);
+    setNoteInfo(null);
   };
+
+  useEffect(() => () => stop(), []);
+
+  const cents = noteInfo?.cents || 0;
+  const inTune = Math.abs(cents) < 8;
+  const needlePos = Math.min(Math.max(50 + (cents / 50) * 40, 5), 95);
+
+  const closestString = noteInfo
+    ? GUITAR_STRINGS.reduce((best, s) =>
+        Math.abs(s.freq - noteInfo.freq) < Math.abs(best.freq - noteInfo.freq) ? s : best
+      , GUITAR_STRINGS[0])
+    : null;
 
   return (
-    <div className="auth-page">
-      {/* Background orbs */}
-      <div style={{
-        position: 'fixed', inset: 0, pointerEvents: 'none',
-        background: 'radial-gradient(ellipse at 25% 35%, rgba(162,120,255,0.12) 0%, transparent 55%), radial-gradient(ellipse at 75% 70%, rgba(240,192,96,0.07) 0%, transparent 50%)',
-      }} />
+    <div>
+      <h1 className="page-title">Guitar Tuner</h1>
+      <p className="page-subtitle">Use your microphone to tune each string in real time.</p>
 
-      <div className="auth-card" style={{ position: 'relative', zIndex: 1 }}>
-        {/* Logo */}
-        <div className="auth-logo" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 8 }}>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-            <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" stroke="url(#ag)" strokeWidth="2"/>
-            <defs>
-              <linearGradient id="ag" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#a278ff"/>
-                <stop offset="100%" stopColor="#f0c060"/>
-              </linearGradient>
-            </defs>
-          </svg>
-          GuitarCoach
-        </div>
-
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, marginBottom: 6 }}>
-            {mode === 'login' ? 'Welcome back 👋' : 'Start your journey 🎸'}
-          </h1>
-          <p style={{ color: 'var(--text-2)', fontSize: 13 }}>
-            {mode === 'login' ? 'Pick up where you left off' : 'Create a free account to track your progress'}
-          </p>
-        </div>
-
-        {error && (
-          <div className="error-msg" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>⚠️</span> {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit}>
-          {mode === 'signup' && (
-            <div className="form-group">
-              <label className="form-label">Username</label>
-              <input
-                className="form-input"
-                type="text"
-                placeholder="Your guitarist name"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                required
-              />
+      <div className="card" style={{ maxWidth: 520, margin: '0 auto' }}>
+        {/* String reference */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 32, flexWrap: 'wrap' }}>
+          {GUITAR_STRINGS.map(s => (
+            <div key={s.name} style={{
+              padding: '6px 14px', borderRadius: 8, textAlign: 'center',
+              background: closestString?.name === s.name && listening ? 'var(--accent-dim)' : 'var(--bg-2)',
+              border: `1px solid ${closestString?.name === s.name && listening ? 'var(--accent)' : 'var(--border)'}`,
+              transition: 'all 0.2s',
+            }}>
+              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 18, color: closestString?.name === s.name && listening ? 'var(--accent)' : 'var(--text-1)' }}>
+                {s.name.charAt(0)}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)' }}>String {s.string}</div>
             </div>
-          )}
-
-          <div className="form-group">
-            <label className="form-label">Email</label>
-            <input
-              className="form-input"
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-            />
-          </div>
-
-          <PasswordInput
-            label="Password"
-            placeholder={mode === 'signup' ? 'Min. 6 characters' : 'Your password'}
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-          />
-
-          {mode === 'signup' && (
-            <>
-              <PasswordStrength password={password} />
-              <PasswordInput
-                label="Confirm Password"
-                placeholder="Repeat your password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-              />
-              {confirmPassword && password !== confirmPassword && (
-                <div style={{ fontSize: 12, color: 'var(--red)', marginTop: -12, marginBottom: 12 }}>
-                  ✗ Passwords don't match
-                </div>
-              )}
-              {confirmPassword && password === confirmPassword && confirmPassword.length > 0 && (
-                <div style={{ fontSize: 12, color: 'var(--green)', marginTop: -12, marginBottom: 12 }}>
-                  ✓ Passwords match
-                </div>
-              )}
-            </>
-          )}
-
-          <button
-            type="submit"
-            className="btn btn-primary btn-full btn-lg"
-            style={{ marginTop: 8 }}
-            disabled={loading || (mode === 'signup' && password !== confirmPassword && confirmPassword.length > 0)}
-          >
-            {loading ? (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
-                <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
-                Loading...
-              </span>
-            ) : mode === 'login' ? 'Log In' : 'Create Account'}
-          </button>
-        </form>
-
-        <div className="auth-switch">
-          {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}
-          <button onClick={switchMode}>
-            {mode === 'login' ? 'Sign up free' : 'Log in'}
-          </button>
+          ))}
         </div>
 
-        {mode === 'login' && (
-          <div style={{ textAlign: 'center', marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
-              Forgot your password? Contact support.
+        {/* Note display */}
+        <div className="tuner-display">
+          <div className="tuner-note" style={{ color: noteInfo ? (inTune ? 'var(--green)' : cents < 0 ? 'var(--red)' : 'var(--gold)') : 'var(--text-3)' }}>
+            {noteInfo?.note || '—'}
+          </div>
+          <div className="tuner-freq">
+            {noteInfo ? `${noteInfo.freq.toFixed(1)} Hz` : 'Waiting for signal...'}
+          </div>
+
+          {/* Meter */}
+          <div style={{ maxWidth: 360, margin: '28px auto 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-3)', marginBottom: 6, fontFamily: 'var(--font-display)' }}>
+              <span>♭ Flat</span>
+              <span style={{ color: inTune && noteInfo ? 'var(--green)' : 'var(--text-3)' }}>In Tune</span>
+              <span>Sharp ♯</span>
+            </div>
+            <div style={{ height: 8, background: 'linear-gradient(90deg, var(--red), var(--green) 50%, var(--gold))', borderRadius: 4, opacity: 0.4 }} />
+            <div style={{ position: 'relative', height: 20, marginTop: -14 }}>
+              <div style={{
+                position: 'absolute',
+                left: `${noteInfo ? needlePos : 50}%`,
+                top: 0,
+                transform: 'translateX(-50%)',
+                width: 16, height: 16, borderRadius: '50%',
+                background: inTune && noteInfo ? 'var(--green)' : 'var(--accent)',
+                boxShadow: `0 0 12px ${inTune && noteInfo ? 'rgba(96,212,160,0.6)' : 'var(--accent-glow)'}`,
+                transition: 'left 0.1s ease, background 0.3s',
+              }} />
             </div>
           </div>
-        )}
+
+          {noteInfo && (
+            <div style={{ marginTop: 20, fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700, color: inTune ? 'var(--green)' : cents < 0 ? 'var(--red)' : 'var(--gold)' }}>
+              {inTune ? '✓ In Tune!' : cents < 0 ? `${Math.abs(cents.toFixed(0))}¢ Flat — tune up` : `${cents.toFixed(0)}¢ Sharp — tune down`}
+            </div>
+          )}
+        </div>
+
+        {error && <div className="error-msg" style={{ margin: '16px 0' }}>{error}</div>}
+
+        <div style={{ textAlign: 'center', marginTop: 16 }}>
+          {!listening ? (
+            <button className="btn btn-primary btn-lg" onClick={start}>🎤 Start Tuning</button>
+          ) : (
+            <button className="btn btn-ghost btn-lg" onClick={stop}>⏹ Stop</button>
+          )}
+        </div>
+
+        <div className="divider" />
+        <div style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
+          Standard EADGBE tuning · Click a string above for reference
+        </div>
       </div>
-
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
     </div>
   );
 }

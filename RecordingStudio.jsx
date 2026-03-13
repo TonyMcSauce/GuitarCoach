@@ -1,284 +1,262 @@
-// src/pages/Songs.jsx - V2 with auto-scroll, tempo, loop, countdown
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { SONGS } from '../data/chords';
+// src/pages/AuthPage.jsx - V2
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../services/AuthContext';
-import { markSongCompleted, getSmartRecommendations } from '../services/userService';
-import { playChordSound } from '../services/audioEngine';
-import { XPToast } from '../components/XPToast';
 
-function SongPlayer({ song, known, completed, onComplete, onClose }) {
-  const [tempo, setTempo] = useState(1.0);
-  const [currentSection, setCurrentSection] = useState(0);
-  const [currentChordIdx, setCurrentChordIdx] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [countdown, setCountdown] = useState(null);
-  const [showSimplified, setShowSimplified] = useState(false);
-  const intervalRef = useRef(null);
-  const countRef = useRef(null);
-  const canPlay = song.chords.every(c => known.includes(c));
-  const bpmAdjusted = Math.round(song.bpm * tempo);
-  const secPerChord = (60 / bpmAdjusted) * 2; // 2 beats per chord slot
+const EyeIcon = ({ open }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    {open ? (
+      <>
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </>
+    ) : (
+      <>
+        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+        <line x1="1" y1="1" x2="23" y2="23"/>
+      </>
+    )}
+  </svg>
+);
 
-  const allChords = song.progression.flatMap(s => s.chords.map(c => ({ chord: c, section: s.section })));
-
-  const stop = useCallback(() => {
-    clearInterval(intervalRef.current);
-    clearInterval(countRef.current);
-    setPlaying(false);
-    setCountdown(null);
-  }, []);
-
-  const start = () => {
-    setPlaying(true);
-    setCurrentChordIdx(0);
-    let idx = 0;
-    let cd = Math.round(secPerChord);
-    setCountdown(cd);
-
-    countRef.current = setInterval(() => {
-      cd--;
-      if (cd <= 0) cd = Math.round(secPerChord);
-      setCountdown(cd);
-    }, 1000);
-
-    intervalRef.current = setInterval(() => {
-      idx = (idx + 1) % allChords.length;
-      setCurrentChordIdx(idx);
-      if (allChords[idx]) playChordSound(allChords[idx].chord);
-    }, secPerChord * 1000);
-
-    playChordSound(allChords[0].chord);
-  };
-
-  useEffect(() => () => stop(), [stop]);
-
-  const currentChordObj = allChords[currentChordIdx];
-
+function PasswordInput({ value, onChange, placeholder, label }) {
+  const [show, setShow] = useState(false);
   return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20,
-    }} onClick={onClose}>
-      <div style={{
-        background: 'var(--surface)', border: '1px solid var(--border-accent)',
-        borderRadius: 24, padding: 28, maxWidth: 600, width: '100%',
-        maxHeight: '90vh', overflow: 'auto',
-        boxShadow: 'var(--shadow-accent)',
-      }} onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-          <div>
-            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{song.title}</h2>
-            <div style={{ color: 'var(--text-2)', fontSize: 13 }}>{song.artist}</div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>🎵 {bpmAdjusted} BPM</span>
-              {song.capo && <span style={{ fontSize: 12, color: 'var(--gold)' }}>Capo {song.capo}</span>}
-            </div>
-          </div>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
-        </div>
-
-        {/* Live chord display */}
-        {playing && currentChordObj && (
-          <div style={{ textAlign: 'center', padding: '20px', marginBottom: 16, background: 'var(--bg-2)', borderRadius: 16, border: '1px solid var(--border-accent)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-display)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>{currentChordObj.section}</div>
-            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 72, fontStyle: 'italic', fontWeight: 300, color: 'var(--accent)', lineHeight: 1 }}>
-              {currentChordObj.chord}
-            </div>
-            {countdown && (
-              <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 13, fontFamily: 'var(--font-display)', fontWeight: 700 }}>
-                Next in {countdown}s
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Controls */}
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
-          {!playing ? (
-            <button className="btn btn-primary" onClick={start} disabled={!canPlay}>
-              ▶ Play Along
-            </button>
-          ) : (
-            <button className="btn btn-ghost" onClick={stop}>⏹ Stop</button>
-          )}
-
-          <div style={{ flex: 1, minWidth: 180 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4, fontFamily: 'var(--font-display)', fontWeight: 700 }}>
-              TEMPO: {Math.round(tempo * 100)}% ({bpmAdjusted} BPM)
-            </div>
-            <input type="range" min={50} max={125} value={Math.round(tempo * 100)}
-              onChange={e => { stop(); setTempo(Number(e.target.value) / 100); }}
-              style={{ width: '100%', accentColor: 'var(--accent)' }} />
-          </div>
-
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, color: showSimplified ? 'var(--accent)' : 'var(--text-3)' }}>
-            <input type="checkbox" checked={showSimplified} onChange={e => setShowSimplified(e.target.checked)} />
-            Simplified chords
-          </label>
-        </div>
-
-        {/* Chord progression sheet */}
-        {song.progression.map((section, si) => (
-          <div key={si} style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-display)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
-              {section.section}
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {section.chords.map((c, ci) => {
-                const globalIdx = song.progression.slice(0, si).reduce((a, s) => a + s.chords.length, 0) + ci;
-                const isActive = playing && currentChordIdx === globalIdx;
-                return (
-                  <div key={ci} style={{
-                    padding: '10px 18px', borderRadius: 10,
-                    fontFamily: 'var(--font-serif)', fontSize: 24, fontStyle: 'italic',
-                    background: isActive ? 'var(--accent-dim)' : 'var(--bg-2)',
-                    color: isActive ? 'var(--accent)' : known.includes(c) ? 'var(--text-1)' : 'var(--red)',
-                    border: `1px solid ${isActive ? 'var(--border-accent)' : known.includes(c) ? 'var(--border)' : 'rgba(255,107,122,0.3)'}`,
-                    transition: 'all 0.15s', cursor: 'pointer',
-                    transform: isActive ? 'scale(1.08)' : 'scale(1)',
-                    boxShadow: isActive ? 'var(--shadow-accent)' : 'none',
-                  }} onClick={() => playChordSound(c)}>
-                    {c}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-
-        {/* Chord check */}
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-display)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
-            Required Chords
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {song.chords.map(c => (
-              <span key={c} style={{
-                padding: '6px 14px', borderRadius: 8,
-                fontFamily: 'var(--font-serif)', fontSize: 18, fontStyle: 'italic',
-                background: known.includes(c) ? 'var(--green-dim)' : 'var(--red-dim)',
-                color: known.includes(c) ? 'var(--green)' : 'var(--red)',
-                border: `1px solid ${known.includes(c) ? 'var(--green)' : 'var(--red)'}`,
-              }}>{c} {known.includes(c) ? '✓' : '✗'}</span>
-            ))}
-          </div>
-        </div>
-
-        {!canPlay && (
-          <div className="error-msg" style={{ marginBottom: 16 }}>
-            Learn {song.chords.filter(c => !known.includes(c)).join(', ')} to play along with this song.
-          </div>
-        )}
-
-        {canPlay && !completed && (
-          <button className="btn btn-success btn-full" onClick={onComplete}>✓ Mark as Completed · +100 XP</button>
-        )}
-        {completed && <div className="badge badge-green" style={{ padding: '10px 20px', width: '100%', justifyContent: 'center', borderRadius: 10, fontSize: 14 }}>✓ Completed!</div>}
+    <div className="form-group">
+      <label className="form-label">{label}</label>
+      <div style={{ position: 'relative' }}>
+        <input
+          className="form-input"
+          type={show ? 'text' : 'password'}
+          placeholder={placeholder}
+          value={value}
+          onChange={onChange}
+          required
+          style={{ paddingRight: 44 }}
+        />
+        <button
+          type="button"
+          onClick={() => setShow(s => !s)}
+          style={{
+            position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: show ? 'var(--accent)' : 'var(--text-3)',
+            display: 'flex', alignItems: 'center', padding: 0,
+            transition: 'color 0.2s',
+          }}
+        >
+          <EyeIcon open={show} />
+        </button>
       </div>
     </div>
   );
 }
 
-export default function Songs() {
-  const { currentUser, userProfile, refreshProfile } = useAuth();
-  const [selected, setSelected] = useState(null);
-  const [filter, setFilter] = useState('all');
-  const [search, setSearch] = useState('');
-  const [xpToast, setXpToast] = useState(null);
+function PasswordStrength({ password }) {
+  if (!password) return null;
+  const checks = [
+    password.length >= 8,
+    /[A-Z]/.test(password),
+    /[0-9]/.test(password),
+    /[^A-Za-z0-9]/.test(password),
+  ];
+  const strength = checks.filter(Boolean).length;
+  const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+  const colors = ['', 'var(--red)', 'var(--gold)', 'var(--accent)', 'var(--green)'];
+  return (
+    <div style={{ marginTop: -12, marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+        {[1,2,3,4].map(i => (
+          <div key={i} style={{
+            flex: 1, height: 3, borderRadius: 2,
+            background: i <= strength ? colors[strength] : 'var(--bg-3)',
+            transition: 'background 0.3s',
+          }} />
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: colors[strength], fontFamily: 'var(--font-display)', fontWeight: 600 }}>
+        {labels[strength]}
+      </div>
+    </div>
+  );
+}
 
-  const known = userProfile?.knownChords || [];
-  const songsCompleted = userProfile?.songsCompleted || [];
-  const recommended = getSmartRecommendations(userProfile, SONGS);
+export default function AuthPage() {
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [username, setUsername] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { login, signup } = useAuth();
+  const navigate = useNavigate();
 
-  const filtered = SONGS.filter(s => {
-    const matchSearch = s.title.toLowerCase().includes(search.toLowerCase()) || s.artist.toLowerCase().includes(search.toLowerCase());
-    if (!matchSearch) return false;
-    if (filter === 'ready') return s.chords.every(c => known.includes(c));
-    if (filter === 'completed') return songsCompleted.includes(s.id);
-    if (filter === 'recommended') return recommended.some(r => r.id === s.id);
-    if (filter === 'beginner') return s.difficulty === 'Beginner';
-    if (filter === 'intermediate') return s.difficulty === 'Intermediate';
-    return true;
-  });
-
-  const handleComplete = async () => {
-    if (!selected || !currentUser) return;
-    const result = await markSongCompleted(currentUser.uid, selected.id);
-    await refreshProfile();
-    setXpToast({ xp: result.xpGained, message: `"${selected.title}" completed!` });
-    setSelected(null);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (mode === 'signup' && password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    if (mode === 'signup' && password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (mode === 'signup') {
+        await signup(email, password, username);
+      } else {
+        await login(email, password);
+      }
+      navigate('/');
+    } catch (err) {
+      const msg = err.message || '';
+      if (msg.includes('email-already-in-use')) setError('That email is already registered. Try logging in.');
+      else if (msg.includes('user-not-found') || msg.includes('wrong-password') || msg.includes('invalid-credential')) setError('Invalid email or password.');
+      else if (msg.includes('too-many-requests')) setError('Too many attempts. Please wait a moment.');
+      else setError(msg.replace('Firebase: ', '').replace(/\(.*\)/, '') || 'Something went wrong.');
+    }
+    setLoading(false);
   };
 
-  const readyCount = SONGS.filter(s => s.chords.every(c => known.includes(c))).length;
+  const switchMode = () => {
+    setMode(m => m === 'login' ? 'signup' : 'login');
+    setError('');
+    setPassword('');
+    setConfirmPassword('');
+  };
 
   return (
-    <div>
-      <h1 className="page-title">Song Library</h1>
-      <p className="page-subtitle">{readyCount} songs you can play right now. Click any song to play along.</p>
+    <div className="auth-page">
+      {/* Background orbs */}
+      <div style={{
+        position: 'fixed', inset: 0, pointerEvents: 'none',
+        background: 'radial-gradient(ellipse at 25% 35%, rgba(162,120,255,0.12) 0%, transparent 55%), radial-gradient(ellipse at 75% 70%, rgba(240,192,96,0.07) 0%, transparent 50%)',
+      }} />
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input className="form-input" placeholder="Search songs..." value={search} onChange={e => setSearch(e.target.value)} style={{ maxWidth: 260 }} />
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {[
-            { k: 'all', l: `All (${SONGS.length})` },
-            { k: 'recommended', l: `⭐ Recommended (${recommended.length})` },
-            { k: 'ready', l: `Ready (${readyCount})` },
-            { k: 'beginner', l: 'Beginner' },
-            { k: 'intermediate', l: 'Intermediate' },
-            { k: 'completed', l: `Done (${songsCompleted.length})` },
-          ].map(f => (
-            <button key={f.k} className={`btn btn-sm ${filter === f.k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFilter(f.k)}>{f.l}</button>
-          ))}
+      <div className="auth-card" style={{ position: 'relative', zIndex: 1 }}>
+        {/* Logo */}
+        <div className="auth-logo" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 8 }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+            <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" stroke="url(#ag)" strokeWidth="2"/>
+            <defs>
+              <linearGradient id="ag" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#a278ff"/>
+                <stop offset="100%" stopColor="#f0c060"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          GuitarCoach
         </div>
-      </div>
 
-      <div className="card-grid">
-        {filtered.map(song => {
-          const canPlay = song.chords.every(c => known.includes(c));
-          const isCompleted = songsCompleted.includes(song.id);
-          const rec = recommended.find(r => r.id === song.id);
-          return (
-            <div key={song.id}
-              className="card"
-              style={{ cursor: 'pointer', borderColor: isCompleted ? 'var(--green)' : canPlay ? 'var(--border-accent)' : undefined }}
-              onClick={() => setSelected(song)}
-              onMouseEnter={e => e.currentTarget.style.borderColor = isCompleted ? 'var(--green)' : 'var(--border-accent)'}
-              onMouseLeave={e => e.currentTarget.style.borderColor = isCompleted ? 'var(--green)' : 'var(--border)'}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 15, marginBottom: 2 }}>{song.title}</div>
-                  <div style={{ color: 'var(--text-3)', fontSize: 12 }}>{song.artist}</div>
-                </div>
-                <div style={{ display: 'flex', gap: 4, flexDirection: 'column', alignItems: 'flex-end' }}>
-                  {isCompleted && <span className="badge badge-green">✓ Done</span>}
-                  {canPlay && !isCompleted && <span className="badge badge-accent">Ready</span>}
-                  {rec && <span className="badge badge-gold">⭐ Rec</span>}
-                  {song.capo && <span className="badge" style={{ background: 'var(--bg-2)', color: 'var(--text-3)' }}>Capo {song.capo}</span>}
-                </div>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 10 }}>
-                {song.chords.map(c => (
-                  <span key={c} style={{
-                    padding: '1px 8px', borderRadius: 5, fontSize: 11,
-                    fontFamily: 'var(--font-display)', fontWeight: 700,
-                    background: known.includes(c) ? 'var(--green-dim)' : 'var(--bg-2)',
-                    color: known.includes(c) ? 'var(--green)' : 'var(--text-3)',
-                    border: `1px solid ${known.includes(c) ? 'var(--green)' : 'var(--border)'}`,
-                  }}>{c}</span>
-                ))}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>{song.bpm} BPM · {song.chords.length} chords · {song.difficulty}</div>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, marginBottom: 6 }}>
+            {mode === 'login' ? 'Welcome back 👋' : 'Start your journey 🎸'}
+          </h1>
+          <p style={{ color: 'var(--text-2)', fontSize: 13 }}>
+            {mode === 'login' ? 'Pick up where you left off' : 'Create a free account to track your progress'}
+          </p>
+        </div>
+
+        {error && (
+          <div className="error-msg" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>⚠️</span> {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit}>
+          {mode === 'signup' && (
+            <div className="form-group">
+              <label className="form-label">Username</label>
+              <input
+                className="form-input"
+                type="text"
+                placeholder="Your guitarist name"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                required
+              />
             </div>
-          );
-        })}
+          )}
+
+          <div className="form-group">
+            <label className="form-label">Email</label>
+            <input
+              className="form-input"
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              required
+            />
+          </div>
+
+          <PasswordInput
+            label="Password"
+            placeholder={mode === 'signup' ? 'Min. 6 characters' : 'Your password'}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+          />
+
+          {mode === 'signup' && (
+            <>
+              <PasswordStrength password={password} />
+              <PasswordInput
+                label="Confirm Password"
+                placeholder="Repeat your password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+              />
+              {confirmPassword && password !== confirmPassword && (
+                <div style={{ fontSize: 12, color: 'var(--red)', marginTop: -12, marginBottom: 12 }}>
+                  ✗ Passwords don't match
+                </div>
+              )}
+              {confirmPassword && password === confirmPassword && confirmPassword.length > 0 && (
+                <div style={{ fontSize: 12, color: 'var(--green)', marginTop: -12, marginBottom: 12 }}>
+                  ✓ Passwords match
+                </div>
+              )}
+            </>
+          )}
+
+          <button
+            type="submit"
+            className="btn btn-primary btn-full btn-lg"
+            style={{ marginTop: 8 }}
+            disabled={loading || (mode === 'signup' && password !== confirmPassword && confirmPassword.length > 0)}
+          >
+            {loading ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
+                <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+                Loading...
+              </span>
+            ) : mode === 'login' ? 'Log In' : 'Create Account'}
+          </button>
+        </form>
+
+        <div className="auth-switch">
+          {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}
+          <button onClick={switchMode}>
+            {mode === 'login' ? 'Sign up free' : 'Log in'}
+          </button>
+        </div>
+
+        {mode === 'login' && (
+          <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              Forgot your password? Contact support.
+            </div>
+          </div>
+        )}
       </div>
 
-      {selected && (
-        <SongPlayer song={selected} known={known} completed={songsCompleted.includes(selected.id)} onComplete={handleComplete} onClose={() => setSelected(null)} />
-      )}
-      {xpToast && <XPToast {...xpToast} onDone={() => setXpToast(null)} />}
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }
